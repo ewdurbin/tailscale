@@ -175,7 +175,7 @@ func pgStatefulSet(pg *tsapi.ProxyGroup, namespace, image, tsFirewallMode string
 			},
 			{
 				Name:  "TS_EXPERIMENTAL_SERVICE_AUTO_ADVERTISEMENT",
-				Value: "false",
+				Value: "true",
 			},
 			{
 				// TODO(tomhjp): This is tsrecorder-specific and does nothing. Delete.
