@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
@@ -40,14 +41,28 @@ func clientForTailnet(ctx context.Context, cl client.Client, namespace, name str
 		baseURL = tn.Spec.LoginURL
 	}
 
-	credentials := clientcredentials.Config{
-		ClientID:     string(secret.Data["client_id"]),
-		ClientSecret: string(secret.Data["client_secret"]),
-		TokenURL:     baseURL + "/api/v2/oauth/token",
-	}
+	clientID := string(secret.Data["client_id"])
+	var httpClient *http.Client
 
-	source := credentials.TokenSource(ctx)
-	httpClient := oauth2.NewClient(ctx, source)
+	if jwt, ok := secret.Data["jwt"]; ok && len(jwt) > 0 {
+		// Workload identity federation: use JWT token exchange.
+		credentials := clientcredentials.Config{
+			ClientID: clientID,
+			TokenURL: baseURL + "/api/v2/oauth/token-exchange",
+			EndpointParams: map[string][]string{
+				"jwt": {string(jwt)},
+			},
+		}
+		httpClient = oauth2.NewClient(ctx, credentials.TokenSource(ctx))
+	} else {
+		// Static OAuth credentials.
+		credentials := clientcredentials.Config{
+			ClientID:     clientID,
+			ClientSecret: string(secret.Data["client_secret"]),
+			TokenURL:     baseURL + "/api/v2/oauth/token",
+		}
+		httpClient = oauth2.NewClient(ctx, credentials.TokenSource(ctx))
+	}
 
 	ts := tailscale.NewClient(defaultTailnet, nil)
 	ts.UserAgent = "tailscale-k8s-operator"

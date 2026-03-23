@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -229,10 +230,11 @@ func (r *Reconciler) createOrUpdate(ctx context.Context, tailnet *tsapi.Tailnet)
 	return reconcile.Result{}, nil
 }
 
-// Constants for OAuth credential fields within the Secret referenced by the Tailnet.
+// Constants for credential fields within the Secret referenced by the Tailnet.
 const (
 	clientIDKey     = "client_id"
 	clientSecretKey = "client_secret"
+	jwtKey          = "jwt"
 )
 
 func (r *Reconciler) createClient(ctx context.Context, tailnet *tsapi.Tailnet, secret *corev1.Secret) TailscaleClient {
@@ -245,14 +247,28 @@ func (r *Reconciler) createClient(ctx context.Context, tailnet *tsapi.Tailnet, s
 		baseURL = tailnet.Spec.LoginURL
 	}
 
-	credentials := clientcredentials.Config{
-		ClientID:     string(secret.Data[clientIDKey]),
-		ClientSecret: string(secret.Data[clientSecretKey]),
-		TokenURL:     baseURL + "/api/v2/oauth/token",
-	}
+	clientID := string(secret.Data[clientIDKey])
+	var httpClient *http.Client
 
-	source := credentials.TokenSource(ctx)
-	httpClient := oauth2.NewClient(ctx, source)
+	if jwt := secret.Data[jwtKey]; len(jwt) > 0 {
+		// Workload identity federation: use JWT token exchange.
+		credentials := clientcredentials.Config{
+			ClientID: clientID,
+			TokenURL: baseURL + "/api/v2/oauth/token-exchange",
+			EndpointParams: map[string][]string{
+				"jwt": {string(jwt)},
+			},
+		}
+		httpClient = oauth2.NewClient(ctx, credentials.TokenSource(ctx))
+	} else {
+		// Static OAuth credentials.
+		credentials := clientcredentials.Config{
+			ClientID:     clientID,
+			ClientSecret: string(secret.Data[clientSecretKey]),
+			TokenURL:     baseURL + "/api/v2/oauth/token",
+		}
+		httpClient = oauth2.NewClient(ctx, credentials.TokenSource(ctx))
+	}
 
 	tsClient := tailscale.NewClient("-", nil)
 	tsClient.UserAgent = "tailscale-k8s-operator"
@@ -305,8 +321,8 @@ func (r *Reconciler) ensureSecret(tailnet *tsapi.Tailnet, secret *corev1.Secret)
 		message = fmt.Sprintf("Secret %q is empty", secret.Name)
 	case len(secret.Data[clientIDKey]) == 0:
 		message = fmt.Sprintf("Secret %q is missing the client_id field", secret.Name)
-	case len(secret.Data[clientSecretKey]) == 0:
-		message = fmt.Sprintf("Secret %q is missing the client_secret field", secret.Name)
+	case len(secret.Data[clientSecretKey]) == 0 && len(secret.Data[jwtKey]) == 0:
+		message = fmt.Sprintf("Secret %q is missing the client_secret or jwt field", secret.Name)
 	}
 
 	if message == "" {
